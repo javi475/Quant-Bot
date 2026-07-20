@@ -7,6 +7,7 @@ ASGI Engine app, with no real network, database, or second process."""
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api import auth, backtests, connectors, deployment, hermes, monitoring, risk, strategies, trades
 from backend.app.engine_client import EngineClient
@@ -16,6 +17,11 @@ from backend.app.services.strategy_registry import StrategyRegistry
 from engine.core.repository import TradeRepository
 
 DEFAULT_STRATEGIES_DIR = "./strategies"
+# The Vite dev server's default port (frontend/vite.config.ts). Production
+# deployment terminates both dashboard frontend and backend behind the same
+# Nginx host (DOC 6 §4.8), where this cross-origin allowance isn't needed —
+# override via `cors_origins` there instead of relying on this default.
+DEFAULT_CORS_ORIGINS = ["http://localhost:3000"]
 
 
 def create_app(
@@ -31,8 +37,17 @@ def create_app(
     engine_client: EngineClient,
     trade_repository: TradeRepository,
     strategies_dir: str = DEFAULT_STRATEGIES_DIR,
+    cors_origins: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="ATE-SMP Dashboard Backend")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins if cors_origins is not None else DEFAULT_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.state.jwt_secret = jwt_secret
     app.state.dashboard_username = dashboard_username
