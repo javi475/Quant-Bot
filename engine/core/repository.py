@@ -83,7 +83,16 @@ class TradeRepository(Protocol):
 
     async def get_open_trades(self, strategy_id: Optional[str] = None) -> list[TradeRecord]: ...
 
+    async def list_trades(self, strategy_id: Optional[str] = None) -> list[TradeRecord]:
+        """All trades — open and closed — for the dashboard's trade history
+        (DOC 2 §6 GET /api/trades)."""
+        ...
+
     async def record_risk_event(self, event: RiskEventRecord) -> None: ...
+
+    async def list_risk_events(self, strategy_id: Optional[str] = None) -> list[RiskEventRecord]:
+        """DOC 2 §6 GET /api/risk/breaker-history."""
+        ...
 
     async def save_strategy_state(self, strategy_id: str, state: dict[str, Any]) -> None: ...
 
@@ -140,8 +149,18 @@ class InMemoryTradeRepository:
             if not t.is_closed and (strategy_id is None or t.strategy_id == strategy_id)
         ]
 
+    async def list_trades(self, strategy_id: Optional[str] = None) -> list[TradeRecord]:
+        return [
+            t for t in self._trades.values() if strategy_id is None or t.strategy_id == strategy_id
+        ]
+
     async def record_risk_event(self, event: RiskEventRecord) -> None:
         self._risk_events.append(event)
+
+    async def list_risk_events(self, strategy_id: Optional[str] = None) -> list[RiskEventRecord]:
+        return [
+            e for e in self._risk_events if strategy_id is None or e.strategy_id == strategy_id
+        ]
 
     async def save_strategy_state(self, strategy_id: str, state: dict[str, Any]) -> None:
         self._strategy_state[strategy_id] = state
@@ -242,6 +261,32 @@ class PostgresTradeRepository:
                 for row in rows
             ]
 
+    async def list_trades(self, strategy_id: Optional[str] = None) -> list[TradeRecord]:
+        from sqlalchemy import select
+
+        from engine.persistence.models import Trade as TradeModel
+
+        async with self._session_factory() as session:
+            result = await session.execute(select(TradeModel))
+            rows = result.scalars().all()
+            return [
+                TradeRecord(
+                    trade_id=str(row.id),
+                    strategy_id=strategy_id or "",
+                    connector_id="",
+                    asset=row.asset,
+                    side=row.side,
+                    quantity=row.quantity,
+                    entry_time=row.opened_at,
+                    entry_price=row.entry_price,
+                    entry_fee=row.fees or 0.0,
+                    exit_time=row.closed_at,
+                    exit_price=row.exit_price,
+                    exit_fee=0.0,
+                )
+                for row in rows
+            ]
+
     async def record_risk_event(self, event: RiskEventRecord) -> None:
         from engine.persistence.models import RiskEvent as RiskEventModel
 
@@ -259,6 +304,29 @@ class PostgresTradeRepository:
                 )
             )
             await session.commit()
+
+    async def list_risk_events(self, strategy_id: Optional[str] = None) -> list[RiskEventRecord]:
+        from sqlalchemy import select
+
+        from common.enums import RiskEventSeverity, RiskEventType
+        from engine.persistence.models import RiskEvent as RiskEventModel
+
+        async with self._session_factory() as session:
+            result = await session.execute(select(RiskEventModel))
+            rows = result.scalars().all()
+            return [
+                RiskEventRecord(
+                    event_type=RiskEventType(row.event_type),
+                    severity=RiskEventSeverity(row.severity),
+                    description=row.description,
+                    action_taken=row.action_taken or "",
+                    safe_mode_activated=row.safe_mode_activated,
+                    symbol=row.symbol,
+                    occurred_at=row.occurred_at,
+                    metadata=row.metadata_ or {},
+                )
+                for row in rows
+            ]
 
     async def save_strategy_state(self, strategy_id: str, state: dict[str, Any]) -> None:
         from engine.persistence.models import StrategyStateLog

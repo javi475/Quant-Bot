@@ -8,11 +8,13 @@ it never talks to strategy code or venues directly.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from engine.api.schemas import LoadStrategyRequest, SwapStrategyRequest
 from engine.core.engine import AlgorithmEngine
+from engine.risk.risk_config import RiskConfig, RiskConfigError
 from engine.strategy.serialization import decode_config
 
 
@@ -54,6 +56,27 @@ def create_app(engine: AlgorithmEngine, ws_broadcast_interval_seconds: float = 1
     @app.get("/engine/state")
     async def get_state():
         return await engine.get_state_snapshot()
+
+    @app.get("/engine/risk/params")
+    async def get_risk_params():
+        return dataclasses.asdict(engine.risk_manager.config)
+
+    @app.put("/engine/risk/params")
+    async def update_risk_params(updates: dict):
+        current = engine.risk_manager.config
+        merged = {**dataclasses.asdict(current), **updates}
+        try:
+            candidate = RiskConfig.from_dict(merged)
+        except RiskConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Mutate in place: every collaborator constructed with this same
+        # RiskConfig instance (PositionSizer, BreakerManager, SafeModeManager)
+        # reads its fields fresh on every call, so this takes effect on the
+        # very next Engine cycle without any restart or re-wiring.
+        for f in dataclasses.fields(RiskConfig):
+            setattr(current, f.name, getattr(candidate, f.name))
+        return dataclasses.asdict(current)
 
     @app.post("/engine/halt")
     async def halt():
