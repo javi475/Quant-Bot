@@ -122,6 +122,20 @@ def test_position_sizing_rejection_propagates(redirect_decision_audit):
     assert decision.position_sizing.rejected
 
 
+def test_position_sizing_never_blocks_an_exit(redirect_decision_audit):
+    # An exit's execution quantity comes from the caller's actual open
+    # position, not a fresh Kelly calculation — an unfavorable win_probability
+    # must never prevent getting out of a position.
+    manager, _ = make_manager()
+    decision = manager.check_pre_trade(
+        base_ctx(is_entry=False, win_probability=0.1, win_loss_ratio=1.0)
+    )
+    assert decision.approved
+    sizing_check = next(c for c in decision.checks if c.name == "position_sizing")
+    assert sizing_check.passed
+    assert decision.position_sizing is None
+
+
 def test_gross_exposure_rejects_on_entry(redirect_decision_audit):
     manager, config = make_manager()
     decision = manager.check_pre_trade(

@@ -199,17 +199,24 @@ class RiskManager:
         if not record("regime_filter", ctx.regime_ok, None if ctx.regime_ok else "regime filter blocks entry"):
             return finalize(False)
 
-        # 8. Position sizing (Kelly)
-        sizing = self.position_sizer.calculate_size(
-            win_probability=ctx.win_probability,
-            win_loss_ratio=ctx.win_loss_ratio,
-            signal_strength=ctx.signal_strength,
-            portfolio_value=ctx.portfolio_value,
-            price=ctx.price,
-            safe_mode_multiplier=self.safe_mode.size_multiplier(ctx.now),
-        )
-        if not record("position_sizing", not sizing.rejected, sizing.rejection_reason):
-            return finalize(False)
+        # 8. Position sizing (Kelly) — entry only. An exit's execution
+        # quantity is the caller's actual open position size, not a fresh
+        # Kelly calculation, so an unfavorable Kelly fraction (e.g. the
+        # strategy's current win-rate dips) must never block an exit: that
+        # would be the one time you most need to be able to get out.
+        if ctx.is_entry:
+            sizing = self.position_sizer.calculate_size(
+                win_probability=ctx.win_probability,
+                win_loss_ratio=ctx.win_loss_ratio,
+                signal_strength=ctx.signal_strength,
+                portfolio_value=ctx.portfolio_value,
+                price=ctx.price,
+                safe_mode_multiplier=self.safe_mode.size_multiplier(ctx.now),
+            )
+            if not record("position_sizing", not sizing.rejected, sizing.rejection_reason):
+                return finalize(False)
+        else:
+            record("position_sizing", True, "skipped (exit)")
 
         # 9. Gross exposure (entry only)
         if ctx.is_entry:
@@ -253,4 +260,4 @@ class RiskManager:
         if not record("connector_health", ctx.connector_healthy, None if ctx.connector_healthy else "connector unhealthy"):
             return finalize(False)
 
-        return finalize(True, quantity=sizing.quantity)
+        return finalize(True, quantity=sizing.quantity if ctx.is_entry else 0.0)
