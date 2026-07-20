@@ -1,8 +1,10 @@
 """DOC 2 §6, DOC 5 §9 /api/hermes/command: HMAC-authenticated (not JWT —
 Hermes is a separate agent, not the human operator), narrow command surface
-for the orchestration agent. Full parity with every dashboard endpoint isn't
-the point; DOC 5's own command table only ever needs Hermes to check status
-and pull the same three emergency levers a human has via /api/deployment."""
+for the orchestration agent: status/positions/risk read+write and the three
+emergency levers a human has via /api/deployment. Still not full parity with
+every dashboard endpoint — proposal workflow, phase-gate tracking, backups,
+and log access aren't built yet (see hermes/jobs.py for what's genuinely
+implemented vs. honestly stubbed)."""
 
 from __future__ import annotations
 
@@ -40,6 +42,36 @@ async def hermes_command(request: Request) -> dict:
     try:
         if command == "status":
             result = await engine_client.get_state()
+        elif command == "positions":
+            state = await engine_client.get_state()
+            result = {
+                "open_position_count": state.get("open_position_count"),
+                "gross_exposure_value": state.get("gross_exposure_value"),
+                "equity": state.get("equity"),
+            }
+        elif command == "risk_get":
+            result = await engine_client.get_risk_params()
+        elif command == "risk_set":
+            updates = payload.get("updates")
+            if not isinstance(updates, dict):
+                raise HTTPException(status_code=400, detail="risk_set requires an 'updates' object")
+            result = await engine_client.update_risk_params(updates)
+        elif command == "trades":
+            strategy_id = payload.get("strategy_id")
+            trades = await request.app.state.trade_repository.list_trades(strategy_id)
+            result = {
+                "trades": [
+                    {
+                        "trade_id": t.trade_id,
+                        "asset": t.asset,
+                        "side": t.side,
+                        "quantity": t.quantity,
+                        "pnl": t.pnl,
+                        "is_closed": t.is_closed,
+                    }
+                    for t in trades
+                ]
+            }
         elif command == "halt":
             result = await engine_client.halt()
         elif command == "flatten":
@@ -49,6 +81,6 @@ async def hermes_command(request: Request) -> dict:
         else:
             raise HTTPException(status_code=400, detail=f"unknown command '{command}'")
     except EngineClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)) from exc
 
     return {"command": command, "result": result}

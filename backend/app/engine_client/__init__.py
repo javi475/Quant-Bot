@@ -16,7 +16,18 @@ from sdk.ate_smp.models.strategy_config import StrategyConfig
 
 
 class EngineClientError(Exception):
-    pass
+    """Carries the Engine's actual HTTP status code so callers can tell "the
+    Engine rejected this request" (4xx — e.g. an invalid risk-param value, an
+    unknown strategy_id) apart from "the Engine is unreachable or broke"
+    (5xx, connection failure) instead of guessing from the message string."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def is_client_error(self) -> bool:
+        return self.status_code is not None and 400 <= self.status_code < 500
 
 
 class EngineClient:
@@ -24,9 +35,18 @@ class EngineClient:
         self.http = http_client
 
     async def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
-        response = await self.http.request(method, path, **kwargs)
+        try:
+            response = await self.http.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            raise EngineClientError(f"{method} {path} -> connection failed: {exc}") from exc
+
         if response.status_code >= 400:
-            raise EngineClientError(f"{method} {path} -> {response.status_code}: {response.text}")
+            detail = response.text
+            try:
+                detail = response.json().get("detail", detail)
+            except ValueError:
+                pass
+            raise EngineClientError(f"{method} {path} -> {response.status_code}: {detail}", response.status_code)
         return response.json()
 
     async def load_strategy(

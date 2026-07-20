@@ -575,3 +575,54 @@ async def test_hermes_command_does_not_require_jwt(backend):
         "/api/hermes/command", content=body, headers={"X-Hermes-Signature": sig, "X-Hermes-Timestamp": ts}
     )
     assert resp.status_code == 200
+
+
+async def _hermes_post(backend, payload: dict):
+    body = json.dumps(payload).encode()
+    ts = str(time.time())
+    sig = compute_hermes_signature(HERMES_SECRET, ts, "POST", "/api/hermes/command", body)
+    return await backend.client.post(
+        "/api/hermes/command", content=body, headers={"X-Hermes-Signature": sig, "X-Hermes-Timestamp": ts}
+    )
+
+
+@pytest.mark.asyncio
+async def test_hermes_command_positions(backend):
+    resp = await _hermes_post(backend, {"command": "positions"})
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert set(result.keys()) == {"open_position_count", "gross_exposure_value", "equity"}
+
+
+@pytest.mark.asyncio
+async def test_hermes_command_risk_get(backend):
+    resp = await _hermes_post(backend, {"command": "risk_get"})
+    assert resp.status_code == 200
+    assert resp.json()["result"]["kelly_multiplier"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_hermes_command_risk_set(backend):
+    resp = await _hermes_post(backend, {"command": "risk_set", "updates": {"max_drawdown": 0.19}})
+    assert resp.status_code == 200
+    assert resp.json()["result"]["max_drawdown"] == 0.19
+    assert backend.engine.risk_manager.config.max_drawdown == 0.19
+
+
+@pytest.mark.asyncio
+async def test_hermes_command_risk_set_requires_updates_object(backend):
+    resp = await _hermes_post(backend, {"command": "risk_set"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hermes_command_risk_set_rejects_invalid_value(backend):
+    resp = await _hermes_post(backend, {"command": "risk_set", "updates": {"max_drawdown": 5.0}})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_hermes_command_trades(backend):
+    resp = await _hermes_post(backend, {"command": "trades"})
+    assert resp.status_code == 200
+    assert resp.json()["result"]["trades"] == []

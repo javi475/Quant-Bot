@@ -23,7 +23,7 @@ async def get_params(request: Request) -> dict:
     try:
         return await request.app.state.engine_client.get_risk_params()
     except EngineClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)) from exc
 
 
 @router.put("/params")
@@ -31,7 +31,7 @@ async def update_params(updates: dict, request: Request) -> dict:
     try:
         return await request.app.state.engine_client.update_risk_params(updates)
     except EngineClientError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)) from exc
 
 
 @router.get("/breaker-history")
