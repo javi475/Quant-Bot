@@ -1,3 +1,4 @@
+from common.enums import AssetClass, Direction, OrderStatus, ParameterType, Timeframe
 from .models.bar import Bar, Tick
 from .models.signal import Signal, FillNotification
 from .models.strategy_config import (
@@ -5,9 +6,12 @@ from .models.strategy_config import (
     RegimeFilter,
     StrategyConfig,
 )
+from .strategy_base import StrategyBase
+from .parameter_validator import ParameterValidator, ParameterValidationError
 
-# NOTE: StrategyBase (the strategy ABC + sandbox) lands in Milestone 1.
-
+# Enums re-exported here (rather than making strategies import `common` directly)
+# since `ate_smp` is the only import root strategies are allowed to reach for
+# framework types — see engine.strategy.sandbox.ALLOWED_MODULE_ROOTS.
 __all__ = [
     "Bar",
     "Tick",
@@ -16,4 +20,12 @@ __all__ = [
     "ParameterDefinition",
     "RegimeFilter",
     "StrategyConfig",
+    "StrategyBase",
+    "ParameterValidator",
+    "ParameterValidationError",
+    "AssetClass",
+    "Direction",
+    "OrderStatus",
+    "ParameterType",
+    "Timeframe",
 ]
