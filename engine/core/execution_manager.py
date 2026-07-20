@@ -85,6 +85,18 @@ class ExecutionManager:
 
         if matching is not None:
             await self.repository.close_trade(matching.trade_id, fill.timestamp, fill.price, fill.fee)
+            # Stash the realized P&L on the Fill itself (mutating the dict in
+            # place — `metadata` is mutable even though Fill is frozen) so the
+            # Engine's daily-loss tracking sees it. Without this, a closed
+            # trade's locked-in loss would silently vanish instead of
+            # counting toward the daily breaker (DOC 4 SS2).
+            direction = 1.0 if matching.side == "long" else -1.0
+            realized_pnl = (
+                direction * (fill.price - matching.entry_price) * matching.quantity
+                - matching.entry_fee
+                - fill.fee
+            )
+            fill.metadata["realized_pnl"] = realized_pnl
         else:
             side = "long" if fill.side == OrderSide.BUY else "short"
             await self.repository.open_trade(

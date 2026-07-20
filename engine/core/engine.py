@@ -63,6 +63,16 @@ from sdk.ate_smp.models.strategy_config import StrategyConfig
 
 log = structlog.get_logger(service="engine")
 
+# A webhook-driven "strategy" has no Python code to ask get_win_probability()/
+# get_win_loss_ratio() of — TradingView alerts carry no win-rate track record.
+# 0.5/1.0 is the Kelly break-even point (full_kelly = (p*(b+1)-1)/b = 0 exactly),
+# which would silently reject every webhook-sourced trade at the position-sizing
+# step forever. These defaults keep Kelly sizing modestly positive while still
+# letting the alert's own `strength` field modulate size; an operator-tunable
+# override belongs on StrategyConfig once the dashboard (M5) can set it.
+DEFAULT_WEBHOOK_WIN_PROBABILITY = 0.55
+DEFAULT_WEBHOOK_WIN_LOSS_RATIO = 1.5
+
 
 class RunningStrategy:
     def __init__(
@@ -77,8 +87,8 @@ class RunningStrategy:
         self.connector_id = connector_id
         self.process = process  # None => TradingView-webhook-driven, no subprocess
         self.enabled = True
-        self.win_probability = 0.5
-        self.win_loss_ratio = 1.0
+        self.win_probability = DEFAULT_WEBHOOK_WIN_PROBABILITY
+        self.win_loss_ratio = DEFAULT_WEBHOOK_WIN_LOSS_RATIO
 
 
 class AlgorithmEngine:
@@ -208,6 +218,28 @@ class AlgorithmEngine:
 
     async def _all_positions(self) -> dict[str, list[Position]]:
         return {cid: await c.get_all_positions() for cid, c in self.connectors.items()}
+
+    async def _refresh_stale_prices(
+        self, positions_by_connector: dict[str, list[Position]], priced_this_cycle: set[str]
+    ) -> None:
+        """Bar dispatch keeps `last_prices` fresh for subprocess-strategy
+        assets, but a webhook-driven strategy's asset never gets a bar — its
+        position would otherwise mark-to-market at its stale entry price
+        forever, silently hiding real gains/losses from the breaker/drawdown/
+        max-loss checks that all read `last_prices`. Fetch a live quote for
+        every open position whose asset didn't already get a fresh bar THIS
+        cycle (checking cache membership instead of `priced_this_cycle` would
+        be wrong: once cached, an asset would never be refetched again)."""
+        for connector_id, positions in positions_by_connector.items():
+            connector = self.connectors[connector_id]
+            for position in positions:
+                if position.quantity == 0 or position.asset in priced_this_cycle:
+                    continue
+                try:
+                    quote = await connector.get_live_quote(position.asset)
+                    self.last_prices[position.asset] = quote.mid
+                except ConnectorError:
+                    pass  # no fresher price available; keep using the last known one
 
     def _mark(self, position: Position) -> float:
         return self.last_prices.get(position.asset, position.current_price)
@@ -357,11 +389,14 @@ class AlgorithmEngine:
                 await self._on_fill(strategy_map.get(fill.asset, ""), fill, now)
 
         positions_by_connector = await self._all_positions()
+        await self._refresh_stale_prices(positions_by_connector, priced_this_cycle=set(new_bars.keys()))
         equity, unrealized_pnl, gross_exposure_value, position_count = await self._compute_snapshot(positions_by_connector)
         gross_exposure_pct = gross_exposure_value / equity if equity > 0 else 0.0
 
         daily_result = self.breaker_manager.check_daily_loss(self._daily_realized_pnl, unrealized_pnl, equity, now)
         drawdown_result = self.breaker_manager.check_drawdown(equity)
+
+        flattened_this_cycle = False
 
         if daily_result.newly_triggered and not self._halted:
             await self._trigger_safe_mode(
@@ -371,6 +406,7 @@ class AlgorithmEngine:
                 now=now,
                 description=f"Daily loss breaker triggered at {daily_result.daily_pnl_pct:.2%}",
             )
+            flattened_this_cycle = True
         if drawdown_result.breached and drawdown_result.newly_escalated and not self._halted:
             await self._trigger_safe_mode(
                 RiskEventType.DRAWDOWN_CEILING,
@@ -379,6 +415,7 @@ class AlgorithmEngine:
                 now=now,
                 description=f"Drawdown ceiling breached at {drawdown_result.current_drawdown:.2%}",
             )
+            flattened_this_cycle = True
         elif drawdown_result.newly_escalated and drawdown_result.alert_level:
             event_type = {
                 "info": RiskEventType.DRAWDOWN_ALERT_1,
@@ -394,6 +431,18 @@ class AlgorithmEngine:
                         occurred_at=now,
                     )
                 )
+
+        if flattened_this_cycle:
+            # A breaker just flattened the book — the snapshot taken above is
+            # now stale. Re-fetch before anything downstream (signal
+            # processing, in-trade monitoring) acts on positions that no
+            # longer exist, which would otherwise re-close an already-flat
+            # position and accidentally open one in the opposite direction.
+            positions_by_connector = await self._all_positions()
+            equity, unrealized_pnl, gross_exposure_value, position_count = await self._compute_snapshot(
+                positions_by_connector
+            )
+            gross_exposure_pct = gross_exposure_value / equity if equity > 0 else 0.0
 
         all_positions_flat = [p for positions in positions_by_connector.values() for p in positions if p.quantity != 0]
 
