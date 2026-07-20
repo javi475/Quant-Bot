@@ -17,6 +17,7 @@ from typing import AsyncIterator, Optional
 from common.enums import AssetClass, OrderSide, OrderStatus, OrderType, Timeframe
 from engine.backtest.cost_model import TransactionCostModel
 from engine.connectors.base import ConnectorBase, ConnectorCapabilities, ConnectorError
+from engine.connectors.position_book import apply_position_delta
 from engine.connectors.price_feed import ReplayPriceFeed
 from engine.models.order import Fill, Order
 from engine.models.position import Position
@@ -133,7 +134,7 @@ class PaperConnector(ConnectorBase):
         delta = order.quantity if is_buy else -order.quantity
 
         self.cash -= delta * fill_price + fee
-        self._apply_position_delta(order.asset, delta, fill_price)
+        apply_position_delta(self._positions, order.asset, delta, fill_price)
 
         order.venue_order_id = order.venue_order_id or self._next_id()
         order.status = OrderStatus.FILLED
@@ -142,32 +143,6 @@ class PaperConnector(ConnectorBase):
         self._orders[order.venue_order_id] = order
         self._pending_orders.pop(order.venue_order_id, None)
         return order
-
-    def _apply_position_delta(self, asset: str, delta: float, fill_price: float) -> None:
-        existing = self._positions.get(asset)
-        if existing is None:
-            self._positions[asset] = Position(
-                asset=asset,
-                quantity=delta,
-                entry_price=fill_price,
-                current_price=fill_price,
-                opened_at=datetime.now(timezone.utc),
-            )
-            return
-
-        new_quantity = existing.quantity + delta
-        if new_quantity == 0:
-            del self._positions[asset]
-            return
-
-        same_direction = (existing.quantity > 0) == (delta > 0)
-        if same_direction:
-            total_cost = existing.entry_price * abs(existing.quantity) + fill_price * abs(delta)
-            existing.entry_price = total_cost / abs(new_quantity)
-        else:
-            existing.entry_price = fill_price  # reduced or flipped: simplified re-basis
-        existing.quantity = new_quantity
-        existing.current_price = fill_price
 
     async def process_pending_orders(self) -> list[Fill]:
         """Called each Engine cycle to check whether any pending LIMIT/STOP
