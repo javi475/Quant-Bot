@@ -1,0 +1,46 @@
+networks:
+  ate-smp-internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.13.0-pg15
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ate_smp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ate_smp}
+      POSTGRES_DB: ${POSTGRES_DB:-ate_smp}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ate_smp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ate-smp-internal
+
+  redis:
+    image: redis:7.2-alpine
+    restart: always
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ate-smp-internal
+
+  # Engine, backend, webhook, watchdog, and frontend services are added in
+  # later milestones (M4/M5/M6) as their code lands.
