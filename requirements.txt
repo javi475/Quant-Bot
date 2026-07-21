@@ -30,3 +30,4 @@ python-telegram-bot==21.0.1
 
 # Connectors (more added incrementally as M6 lands the rest)
 ccxt==4.2.40
+yfinance==1.5.1  # futures/equities historical data (no CME connector exists yet)
