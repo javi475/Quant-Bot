@@ -1,6 +1,4 @@
-"""DOC 2 §6: /api/auth/login, /verify-2fa (folded into login for this
-milestone — TOTP is checked in the same request as the password rather than
-as a separate round-trip), /refresh."""
+"""DOC 2 §6: /api/auth/login, /refresh."""
 
 from __future__ import annotations
 
@@ -12,7 +10,6 @@ from backend.app.auth.security import (
     create_access_token,
     decode_access_token,
     verify_password,
-    verify_totp,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -21,7 +18,6 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class LoginRequest(BaseModel):
     username: str
     password: str
-    totp_code: str
 
 
 class TokenResponse(BaseModel):
@@ -40,8 +36,6 @@ async def login(req: LoginRequest, request: Request) -> TokenResponse:
         req.password, state.dashboard_password_hash
     ):
         raise HTTPException(status_code=401, detail="invalid username or password")
-    if not verify_totp(state.totp_secret, req.totp_code):
-        raise HTTPException(status_code=401, detail="invalid 2FA code")
 
     token = create_access_token(req.username, state.jwt_secret)
     return TokenResponse(access_token=token)

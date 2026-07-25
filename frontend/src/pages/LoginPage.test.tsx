@@ -41,7 +41,6 @@ describe("LoginPage", () => {
 
     await user.type(screen.getByLabelText("Username"), "admin");
     await user.type(screen.getByLabelText("Password"), "hunter2");
-    await user.type(screen.getByLabelText("2FA code"), "123456");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => expect(screen.getByText("Overview page")).toBeInTheDocument());
@@ -59,7 +58,6 @@ describe("LoginPage", () => {
 
     await user.type(screen.getByLabelText("Username"), "admin");
     await user.type(screen.getByLabelText("Password"), "wrong");
-    await user.type(screen.getByLabelText("2FA code"), "000000");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => expect(screen.getByText("invalid username or password")).toBeInTheDocument());

@@ -61,7 +61,6 @@ async def make_backend():
         jwt_secret="jwt-secret",
         dashboard_username="admin",
         dashboard_password_hash=hash_password("pw"),
-        totp_secret="JBSWY3DPEHPK3PXP",
         hermes_hmac_secret=HERMES_SECRET,
         strategy_registry=InMemoryStrategyRegistry(),
         backtest_service=BacktestService(),

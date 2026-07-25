@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 
 import fakeredis
 import httpx
-import pyotp
 import pytest
 
 from backend.app.app import create_app
@@ -130,13 +129,10 @@ class Stack:
         self.engine_http = httpx.AsyncClient(transport=engine_transport, base_url="http://engine-test")
         engine_client = EngineClient(self.engine_http)
 
-        self.totp_secret = pyotp.random_base32()
-        self.strategy_registry = InMemoryStrategyRegistry()
         app = create_app(
             jwt_secret=JWT_SECRET,
             dashboard_username=DASHBOARD_USERNAME,
             dashboard_password_hash=hash_password(DASHBOARD_PASSWORD),
-            totp_secret=self.totp_secret,
             hermes_hmac_secret=HERMES_SECRET,
             strategy_registry=self.strategy_registry,
             backtest_service=BacktestService(),
@@ -154,7 +150,6 @@ class Stack:
             json={
                 "username": DASHBOARD_USERNAME,
                 "password": DASHBOARD_PASSWORD,
-                "totp_code": pyotp.TOTP(self.totp_secret).now(),
             },
         )
         assert resp.status_code == 200, resp.text

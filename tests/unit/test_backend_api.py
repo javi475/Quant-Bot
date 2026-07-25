@@ -3,7 +3,6 @@ import time
 
 import fakeredis
 import httpx
-import pyotp
 import pytest
 
 from backend.app.app import create_app
@@ -92,7 +91,6 @@ def make_engine_app():
 class BackendFixture:
     def __init__(self, tmp_path):
         self.tmp_path = tmp_path
-        self.totp_secret = pyotp.random_base32()
         engine_app, self.engine, self.trade_repository = make_engine_app()
         engine_transport = httpx.ASGITransport(app=engine_app)
         engine_http = httpx.AsyncClient(transport=engine_transport, base_url="http://engine-test")
@@ -106,7 +104,6 @@ class BackendFixture:
             jwt_secret=JWT_SECRET,
             dashboard_username=DASHBOARD_USERNAME,
             dashboard_password_hash=hash_password(DASHBOARD_PASSWORD),
-            totp_secret=self.totp_secret,
             hermes_hmac_secret=HERMES_SECRET,
             strategy_registry=self.strategy_registry,
             backtest_service=self.backtest_service,
@@ -118,13 +115,10 @@ class BackendFixture:
         transport = httpx.ASGITransport(app=app)
         self.client = httpx.AsyncClient(transport=transport, base_url="http://backend-test")
 
-    def totp_code(self) -> str:
-        return pyotp.TOTP(self.totp_secret).now()
-
     async def login(self) -> str:
         resp = await self.client.post(
             "/api/auth/login",
-            json={"username": DASHBOARD_USERNAME, "password": DASHBOARD_PASSWORD, "totp_code": self.totp_code()},
+            json={"username": DASHBOARD_USERNAME, "password": DASHBOARD_PASSWORD},
         )
         assert resp.status_code == 200, resp.text
         return resp.json()["access_token"]
@@ -161,16 +155,7 @@ async def test_login_success(backend):
 async def test_login_wrong_password_rejected(backend):
     resp = await backend.client.post(
         "/api/auth/login",
-        json={"username": DASHBOARD_USERNAME, "password": "wrong", "totp_code": backend.totp_code()},
-    )
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_login_wrong_totp_rejected(backend):
-    resp = await backend.client.post(
-        "/api/auth/login",
-        json={"username": DASHBOARD_USERNAME, "password": DASHBOARD_PASSWORD, "totp_code": "000000"},
+        json={"username": DASHBOARD_USERNAME, "password": "wrong"},
     )
     assert resp.status_code == 401
 

@@ -9,7 +9,9 @@ import type {
   RiskParams,
   StrategySummary,
   StrategyVersion,
+  TelegramSettings,
   Trade,
+  WebhookSettings,
 } from "../types/api";
 
 // ----- Auth -----
@@ -17,7 +19,6 @@ import type {
 export interface LoginRequest {
   username: string;
   password: string;
-  totp_code: string;
 }
 
 export interface TokenResponse {
@@ -191,6 +192,54 @@ export function useBreakerHistory() {
   return useQuery({
     queryKey: ["risk", "breaker-history"],
     queryFn: () => apiClient.get<BreakerHistoryEvent[]>("/api/risk/breaker-history"),
+  });
+}
+
+// ----- Trades -----
+
+// ----- Settings / Telegram -----
+
+export function useTelegramSettings() {
+  return useQuery({
+    queryKey: ["settings", "telegram"],
+    queryFn: () => apiClient.get<TelegramSettings>("/api/settings/telegram"),
+  });
+}
+
+export function useUpdateTelegramSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (req: { bot_token: string; chat_id: string; alert_priority: string }) =>
+      apiClient.put<TelegramSettings>("/api/settings/telegram", req),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings", "telegram"] }),
+  });
+}
+
+export function useTestTelegram() {
+  return useMutation({
+    mutationFn: () => apiClient.post<{ status: string; detail: string }>("/api/settings/telegram/test"),
+  });
+}
+
+export function useWebhookSettings() {
+  return useQuery({
+    queryKey: ["settings", "webhook"],
+    queryFn: () => apiClient.get<WebhookSettings>("/api/settings/webhook"),
+  });
+}
+
+export function useUpdateWebhookSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (req: { webhook_secret: string; webhook_url: string }) =>
+      apiClient.put<WebhookSettings>("/api/settings/webhook", req),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings", "webhook"] }),
+  });
+}
+
+export function useTestWebhook() {
+  return useMutation({
+    mutationFn: () => apiClient.post<{ status: string; detail: string }>("/api/settings/webhook/test"),
   });
 }
 

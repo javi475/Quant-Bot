@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api import auth, backtests, connectors, deployment, hermes, monitoring, risk, strategies, trades
+from backend.app.api import auth, backtests, connectors, deployment, hermes, monitoring, risk, settings, strategies, trades
 from backend.app.engine_client import EngineClient
 from backend.app.services.backtest_service import BacktestService
 from backend.app.services.connector_registry import ConnectorRegistry
@@ -29,7 +29,6 @@ def create_app(
     jwt_secret: str,
     dashboard_username: str,
     dashboard_password_hash: str,
-    totp_secret: str,
     hermes_hmac_secret: str,
     strategy_registry: StrategyRegistry,
     backtest_service: BacktestService,
@@ -52,7 +51,6 @@ def create_app(
     app.state.jwt_secret = jwt_secret
     app.state.dashboard_username = dashboard_username
     app.state.dashboard_password_hash = dashboard_password_hash
-    app.state.totp_secret = totp_secret
     app.state.hermes_hmac_secret = hermes_hmac_secret
     app.state.strategy_registry = strategy_registry
     app.state.backtest_service = backtest_service
@@ -70,5 +68,6 @@ def create_app(
     app.include_router(risk.router)
     app.include_router(trades.router)
     app.include_router(hermes.router)
+    app.include_router(settings.router)
 
     return app

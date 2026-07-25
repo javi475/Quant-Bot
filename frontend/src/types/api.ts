@@ -114,6 +114,19 @@ export interface Trade {
   pnl: number | null;
 }
 
+export interface TelegramSettings {
+  bot_token_masked: string;
+  bot_token_set: boolean;
+  chat_id: string;
+  alert_priority: string;
+}
+
+export interface WebhookSettings {
+  webhook_secret_masked: string;
+  webhook_secret_set: boolean;
+  webhook_url: string;
+}
+
 export interface BreakerHistoryEvent {
   event_type: string;
   severity: string;
