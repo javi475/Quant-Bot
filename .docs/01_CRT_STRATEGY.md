@@ -1,143 +1,175 @@
-# 01 — CRT Strategy Plugin
+# 01 — Candle Range Theory Strategy
 
-*Status: DRAFT — requirements only. Implementation planning pending via /plan.*
-*Parent: [CLAUDE.md](CLAUDE.md) · Prerequisite: [00_ARCHITECTURE_ASBUILT.md](00_ARCHITECTURE_ASBUILT.md)*
+*Status: DRAFT — requirements only. No code until approved.*
+*Parent: [CLAUDE.md](CLAUDE.md) · Read first: [00_ARCHITECTURE_ASBUILT.md](00_ARCHITECTURE_ASBUILT.md)*
 
 ## Problem
 
-The operator trades Candle Range Theory manually — identifying higher
-timeframe points of interest, watching for liquidity sweeps, judging the
-V-shaped reaction by eye, then placing orders by hand. This is slow,
-inconsistent under fatigue, and impossible to backtest systematically.
+The operator trades CRT by hand: find a higher-timeframe level, wait for
+price to sweep liquidity past a candle's high or low, watch it snap back
+inside the range, then enter. Judged by eye, one chart at a time.
 
-The strategy engine to run it already exists. What's missing is CRT itself:
-`example_strategies/` contains only an RSI(2) mean-reversion reference.
+That approach can't answer the only question that matters — **does this have
+an edge?** — because there's no way to replay it over years of data.
+
+The system to run and test a strategy already exists here. CRT doesn't.
 
 ## Evidence
 
-Assumption — needs validation via backtest. **No live or backtested track
-record exists for this CRT ruleset.** The setup criteria below come from the
-operator's strategy notes, not from a coded implementation or a measured
-edge. The purpose of this milestone is to make that edge *measurable*.
+Assumption — **no track record exists, live or backtested.** The rules below
+are the operator's, transcribed from strategy notes. Nothing here is
+validated. This milestone exists to produce the first real evidence either
+way.
 
 ## Users
 
-- **Primary**: The operator, running CRT against ES futures.
-- **Not for**: Users needing a GUI strategy builder — configuration is via
-  the existing `get_parameters_schema()` form generation.
+- **Primary**: The operator, testing CRT against futures data.
 
 ## Hypothesis
 
-We believe **implementing CRT as a `StrategyBase` plugin** will **let the
-operator measure whether CRT has a real edge, and execute it without manual
-error** for **the solo operator**.
-We'll know we're right when a walk-forward backtest over real ES data
-produces a trade log whose setups the operator recognises as the ones they
-would have taken by hand.
+We believe **implementing CRT as a strategy plugin and running it through the
+existing backtester** will **show whether CRT has a measurable edge**.
+We'll know we're right when the backtest produces a trade log whose setups
+the operator recognises as the ones they would have taken manually — and a
+win rate, R multiple, and drawdown they can judge.
 
 ## Success Metrics
 
 | Metric | Target | How measured |
 |---|---|---|
-| Detection agreement with manual review | TBD — needs validation | Operator reviews a sample of detected setups against their own chart reading |
-| Backtest reproducibility | Identical trade log for identical input | Re-run via `BacktestService`, diff output |
-| Sandbox compliance | `on_bar` within the 5s budget on every bar | Existing runtime enforcement; no timeout kills in a full backtest |
-| Edge (Sharpe, win rate, max DD) | TBD — the number this milestone exists to discover | `engine/backtest/metrics.py` + walk-forward |
+| Setups match manual reading | Operator agrees with a sample of detected setups | Review detected setups against their own charts |
+| Reproducible | Same data + settings → identical trade log | Re-run, compare |
+| Stays inside runtime limits | `on_bar` never exceeds the 5s budget | No timeout kills across a full backtest |
+| **Edge** | **TBD — the number this work exists to discover** | `engine/backtest/metrics.py`, walk-forward, Monte Carlo |
+
+## The strategy
+
+Implemented as a `StrategyBase` subclass (see
+[00_ARCHITECTURE_ASBUILT.md](00_ARCHITECTURE_ASBUILT.md)).
+
+### 1. Find the CRT candle
+
+Only consider candles sitting at a **higher-timeframe point of interest** —
+a supply/demand zone, a previous swing high or low, or a liquidity zone.
+
+A CRT candle elsewhere on the chart is ignored. The level is what gives the
+sweep meaning.
+
+### 2. Wait for manipulation
+
+Price must **sweep liquidity** past the CRT candle — above its high, or below
+its low — and then **close back inside the range**. That snap back is the
+V-shaped reaction. The candle that does the sweeping is the **liquidation
+candle**.
+
+No sweep, or a sweep that closes outside, is not a setup.
+
+### 3. Enter — two selectable models
+
+| Model | Behaviour |
+|---|---|
+| **Aggressive** | Enter immediately once the sweep closes back inside the range. |
+| **Conservative** | Wait for price to pull back to the liquidation candle's demand/supply zone, or to an imbalance created by the move, then enter. |
+
+Both are implemented; one is chosen by parameter via
+`get_parameters_schema()`.
+
+### 4. Take profit
+
+The **opposing end of the CRT candle's range**. Swept the low → target the
+high, and vice versa.
+
+### 5. Stop loss
+
+Slightly beyond the **extreme of the liquidation candle** — the actual sweep
+wick — **not** the CRT candle's high or low.
+
+This distinction is the point of the whole method: the liquidation candle is
+the newly protected high/low. A stop at the CRT candle's edge sits inside the
+zone price just proved it will reach.
+
+### What the strategy emits
+
+A `Signal` per setup, with CRT specifics in `metadata`: the HTF level, the
+CRT candle's high and low, the liquidation candle's extreme, which entry
+model fired, and the intended stop and target prices.
+
+### Kelly inputs — an honest caveat
+
+`StrategyBase` requires `get_win_probability()` and `get_win_loss_ratio()`.
+
+The **win/loss ratio is genuinely derivable**: target is the far end of the
+range, stop is just past the sweep, so R is known per setup.
+
+**Win probability is not.** There's no data. It must return a conservative
+placeholder, clearly marked, and be replaced once the backtest produces a
+real number. A fabricated win rate driving position sizing would be worse
+than no strategy at all.
 
 ## Scope
 
-### MVP
+### In
 
-Implement CRT as a `StrategyBase` subclass, honouring all existing runtime
-constraints (sandboxed imports, 5s `on_bar` budget, no order placement, no
-network/filesystem access).
+- CRT detection: HTF level → sweep → close back inside.
+- Both entry models, parameter-selectable.
+- Stop and target per the rules above.
+- Backtest runs through the existing
+  `BacktestService → BacktestRunner → WalkForwardAnalyzer → MonteCarloSimulator`.
 
-**Detection logic:**
+### Out
 
-1. **Higher-timeframe point of interest.** Locate CRT candles only at HTF
-   POIs — supply/demand zones, previous swing highs/lows, liquidity zones.
-2. **Manipulation phase.** Price sweeps liquidity above the CRT candle's
-   high (or below its low) and closes back inside the range — the V-shaped
-   reaction.
-3. **Entry models**, selectable via `get_parameters_schema()`:
-   - *Aggressive* — enter immediately once the sweep closes back inside.
-   - *Conservative* — wait for a pullback to the liquidation candle's
-     demand/supply zone or to a created imbalance.
-4. **Take-profit** — the opposing end of the CRT candle's range.
-5. **Stop-loss** — slightly beyond the extreme of the **liquidation candle**
-   (the actual sweep wick), *not* the CRT candle's high/low. The liquidation
-   candle is the newly protected high/low; this distinction is the point.
+- Prop-firm rules, TradersPost execution, LLM evaluation, Pine Script export
+  — all removed from scope (see [CLAUDE.md](CLAUDE.md)).
+- Any live or funded trading. **This is backtest-only.** CRT will not place a
+  real order, because nothing in scope connects it to a broker.
+- Auto-tuning CRT's parameters.
+- Tick-level precision — `on_tick` returns `[]`.
 
-**Signal emission:** return `Signal` objects with CRT specifics in
-`metadata` — HTF POI reference, CRT candle high/low, liquidation candle
-extreme, entry model used, intended stop price, intended target price.
+## Milestones
 
-> `metadata` is the agreed carrier for this data across three consumers: the
-> LLM gate reads it as context ([04](04_LLM_TRADE_GATE.md)), the prop-firm
-> sizer reads the stop distance ([02](02_PROP_FIRM_RISK.md)), and the
-> connector turns stop/target into bracket parameters
-> ([03](03_TRADERSPOST_CONNECTOR.md)). Its shape is a cross-document
-> contract — changing it breaks all three.
+| # | Milestone | Outcome | Status |
+|---|---|---|---|
+| 0 | **Green test baseline** | Existing suite runs on Python 3.11/3.12 — proves the foundation before building on it | pending |
+| 1 | HTF level identification | Points of interest computed from bar history | pending |
+| 2 | Sweep + reaction detection | Emits CRT signals with full `metadata`, aggressive model | pending |
+| 3 | Conservative entry | Pullback / imbalance entry, parameter-selectable | pending |
+| 4 | Backtest on real ES data | Walk-forward + Monte Carlo results the operator can judge | pending |
 
-**Kelly inputs:** `get_win_probability()` and `get_win_loss_ratio()` are
-required by `StrategyBase`. CRT's win/loss ratio is *structurally* derivable
-— the target is the opposite end of the range and the stop is just past the
-sweep, so R is known per setup. Win probability has no basis until backtest
-data exists; until then it must return a conservative placeholder and the
-strategy must not rely on Kelly for sizing (see
-[02_PROP_FIRM_RISK.md](02_PROP_FIRM_RISK.md), where prop-firm sizing
-supersedes Kelly for futures).
-
-**Backtesting:** drive CRT through the existing
-`BacktestService → BacktestRunner → WalkForwardAnalyzer → MonteCarloSimulator`
-chain, using `scripts/backtest_es_futures.py` as the data-loading template.
-
-### Out of scope
-
-- **Pine Script export** — deferred until the Python detection logic is
-  validated. Exporting unvalidated logic to TradingView would duplicate an
-  unproven implementation in a second language. Revisit once backtest
-  results exist.
-- Strategies other than CRT.
-- Auto-optimization of CRT parameters.
-- Intrabar/tick-level entry precision — `on_tick` returns `[]` initially.
-
-## Delivery Milestones
-
-| # | Milestone | Outcome | Status | Plan |
-|---|---|---|---|---|
-| 0 | Green test baseline | Existing suite runs on a supported Python; CRT work starts from known-good | pending | — |
-| 1 | HTF POI identification | Points of interest computed from bar history | pending | — |
-| 2 | Sweep + V-reaction detection | Emits CRT setups with full `metadata`, aggressive model | pending | — |
-| 3 | Conservative entry model | Pullback-to-zone / imbalance entry selectable by parameter | pending | — |
-| 4 | Backtest on real ES data | Walk-forward + Monte Carlo trade log the operator can judge | pending | — |
+Milestone 0 is first for a reason: if the existing tests don't pass, we'd be
+building CRT on an unverified foundation and wouldn't know which layer broke.
 
 ## Open Questions
 
-- [ ] **How is an HTF point of interest defined algorithmically?** Highest-risk
-  unknown — supply/demand and liquidity zones are discretionary when drawn by
-  hand. Options: operator-configured static zones, auto-detected swing pivots,
-  or a hybrid. This choice determines whether detection is reproducible at all.
-- [ ] What instrument and timeframe pair does the MVP target — ES on which
-  execution timeframe, against which HTF for POIs?
-- [ ] `backtest_es_futures.py` pulls **daily** bars from yfinance. CRT
-  intraday almost certainly needs finer granularity than yfinance provides.
-  What is the intraday futures data source?
-- [ ] Precise definition of "created imbalance" for the conservative entry —
-  standard fair-value-gap, or operator-specific?
-- [ ] How far beyond the liquidation candle extreme does the stop sit — fixed
-  ticks, ATR multiple, or a parameter?
-- [ ] Can HTF context be computed inside a 5s `on_bar` budget, or does it need
-  precomputation in `initialize()` / cached state?
+These need answers before or during implementation. The first is the big one.
+
+- [ ] **How is a higher-timeframe point of interest defined in code?**
+  Supply/demand and liquidity zones are discretionary when drawn by hand.
+  Options: (a) the operator configures zones manually, (b) auto-detect from
+  swing pivots, (c) a hybrid. **If this can't be pinned down, detection isn't
+  reproducible and the backtest means nothing.** Recommend starting with (a)
+  — manual zones — to get a working baseline, then attempting (b).
+- [ ] **Which instrument and timeframes?** CRT needs an execution timeframe
+  and a higher timeframe for levels. Which pair?
+- [ ] **Where does intraday data come from?** `backtest_es_futures.py` uses
+  yfinance **daily** bars. CRT intraday needs finer granularity than yfinance
+  reliably provides. Either a data source is chosen, or the first backtest is
+  daily-bar CRT — which is a real strategy, just not the one being described.
+- [ ] **What exactly is a "created imbalance"** for the conservative entry —
+  a standard fair-value gap, or something specific to the operator's method?
+- [ ] **How far beyond the liquidation candle does the stop sit?** Fixed
+  ticks, an ATR multiple, or a tunable parameter?
+- [ ] Can higher-timeframe context be computed inside the 5-second `on_bar`
+  budget, or does it need precomputing in `initialize()`?
 
 ## Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| HTF POI detection too discretionary to automate | **High** | High | Start with operator-configured zones; treat auto-detection as a later milestone |
-| CRT has no real edge once mechanised | Unknown (assumption) | High | This milestone exists to find out, on paper, before capital is committed |
-| Intraday futures data unavailable/costly | Medium | Medium | Resolve data source before building detection; daily-bar CRT may be a fallback |
-| Placeholder Kelly inputs mislead sizing | Medium | High | Prop-firm sizing supersedes Kelly for futures; never let a placeholder win-probability drive real size |
+| HTF levels too discretionary to automate | **High** | High | Start with operator-configured zones; treat auto-detection as later work |
+| CRT has no edge once mechanised | Unknown | High | This is precisely what the milestone measures — and it's cheap to find out on paper |
+| No usable intraday data | Medium | Medium | Settle the data source before writing detection; daily-bar CRT is the fallback |
+| Placeholder win-probability taken as real | Medium | Medium | Mark it explicitly in code; replace with the backtested figure |
+| Coded CRT quietly differs from the operator's actual method | **Medium** | High | Milestone 2 ends with a side-by-side review of detected setups against the operator's own charts, before building further |
 
 ---
-*Status: DRAFT — requirements only. Implementation planning pending via /plan.*
+*Status: DRAFT — requirements only. No code until approved.*

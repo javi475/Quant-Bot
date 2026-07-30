@@ -1,120 +1,98 @@
-# Quant-Bot / ATE-SMP — Project Charter
+# Quant-Bot — Project Charter
 
-*Derived from the codebase as of commit `93a776b` (2026-07-30). Requirements only — no implementation until approved.*
+*Scope: the CRT strategy, and nothing else. Requirements only — no code until approved.*
 
-## Read this first
+## The short version
 
-**This is not a greenfield project.** The repository contains a working
-multi-asset trading system ("ATE-SMP") built across milestones M0–M6: a
-sandboxed strategy SDK, a walk-forward/Monte-Carlo backtester, a 13-check
-pre-trade risk pipeline, an engine core with state persistence and a
-watchdog, a FastAPI dashboard backend, a React frontend, and a Hermes
-orchestration agent.
+This repository already contains a working trading system called **ATE-SMP**
+(~216 files: strategy runtime, backtester, risk manager, dashboard, test
+suite). It was built by earlier work in this repo.
 
-The current objective is **not to rebuild it**. It is to extend it with four
-capabilities so it can trade Candle Range Theory (CRT) on futures through
-prop-firm accounts:
+It does **not** contain a Candle Range Theory strategy.
 
-1. A CRT strategy plugin
-2. A TradersPost connector (outbound order execution)
-3. A prop-firm risk profile that runs *alongside* the existing Kelly engine
-4. An LLM trade-evaluator gate
+**That is the entire current goal: write CRT as one strategy plugin, and
+backtest it.** The machine to run it already exists.
 
-Everything else already exists and is reused as-is.
+## Why this is a small job, not a big one
 
-## A note on the original design docs
+The existing system is built so strategies are plug-in modules. A strategy
+is a single Python class that receives price bars and returns trade signals.
+It does not place orders, manage risk, or talk to a broker — the engine
+already does all of that.
 
-The code references design documents throughout — `DOC 2 §4`, `DOC 3 §1`,
-`DOC 4 §8`, `DOC 5`. **Those documents are not in the repository.** The
-`.docs/` set you are reading was re-derived by reading the source, so it
-describes what the code *does*, which may differ from what those documents
-originally *specified*. Where a docstring cites a DOC section, that citation
-is preserved as a breadcrumb but has not been independently verified.
+So CRT is one file implementing one interface, plus a backtest run.
+
+## What we are NOT doing right now
+
+These were previously in scope and have been **removed**:
+
+- Prop-firm rule enforcement (Lucid, Apex, Top One, Tradeify)
+- TradersPost order execution
+- AI/LLM trade evaluation
+- Pine Script / TradingView export
+- Live or funded-account trading of any kind
+
+They are recoverable from git history at commit `5e6c713` if we return to
+them. Until then, no document in `.docs/` should reference them as active
+work.
+
+**Consequence to be clear about:** with these removed, CRT is
+**backtest-only**. It will not place a real trade, because nothing in scope
+connects it to a broker. That is the intended state.
 
 ## Problem
 
-The operator executes CRT setups manually — watching charts, judging
-liquidity sweeps by eye, placing orders by hand. This is slow, inconsistent
-under fatigue, and has no automatic enforcement of prop-firm rules (daily
-loss limits, trailing drawdown, consistency rules), where a single mistake
-can end an evaluation or funded account.
-
-The existing system cannot yet do this job because it targets crypto spot
-via ccxt with percentage-of-portfolio Kelly sizing — not futures contracts
-under absolute-dollar prop-firm constraints.
+The operator trades CRT by hand — spotting higher-timeframe levels, watching
+for a liquidity sweep, judging the reaction by eye. It is slow, inconsistent,
+and impossible to test systematically. There is no way to answer "does this
+actually work?" without a coded version.
 
 ## Evidence
 
-Assumption — the CRT strategy has **no live or backtested track record
-yet**. The first job of this work is to let the operator test that
-hypothesis safely, not to encode a proven edge. Every strategy-performance
-claim in these docs is `TBD — needs validation via backtest + paper phase`.
-
-The existing infrastructure's correctness is likewise **structurally
-assessed, not empirically verified** — see Open Risks below.
+Assumption — **CRT has no track record here, live or backtested.** The rules
+come from the operator's strategy notes. The point of this work is to find
+out whether the edge is real, not to automate something already proven.
 
 ## Users
 
-- **Primary**: The operator, solo, trading their own prop-firm accounts
-  (Lucid Trading, Apex Trader Funding, Top One Futures, Tradeify).
-- **Not for**: Other traders, teams, or multi-tenant use.
+- **Primary**: The operator, testing CRT against futures data.
+- **Not for**: Anyone else; no multi-user concerns.
 
-## System hypothesis
+## Hypothesis
 
-We believe **adding a CRT strategy, a TradersPost connector, a prop-firm
-risk profile, and an LLM trade gate to the existing ATE-SMP engine** will
-**remove manual execution error and enforce prop-firm risk discipline** for
-**the solo operator**.
-We'll know we're right when a full evaluation cycle (paper, then one funded
-account) runs without a prop-firm rule violation, and the LLM gate
-measurably blocks poor setups without materially missing good ones.
+We believe **coding CRT as a strategy plugin and backtesting it** will
+**tell the operator whether CRT has a measurable edge** — something manual
+trading cannot answer.
+We'll know we're right when a backtest over real ES data produces a trade log
+whose setups the operator recognises as the ones they'd have taken by hand.
 
-## Document map
+## Documents
 
-| Doc | Covers |
+| Doc | Purpose |
 |---|---|
-| [00_ARCHITECTURE_ASBUILT.md](00_ARCHITECTURE_ASBUILT.md) | What already exists, re-derived from source — read before the rest |
-| [01_CRT_STRATEGY.md](01_CRT_STRATEGY.md) | CRT as a `StrategyBase` plugin + Pine Script export |
-| [02_PROP_FIRM_RISK.md](02_PROP_FIRM_RISK.md) | Prop-firm rule profile alongside the existing Kelly engine |
-| [03_TRADERSPOST_CONNECTOR.md](03_TRADERSPOST_CONNECTOR.md) | Outbound TradersPost webhook execution as a `ConnectorBase` |
-| [04_LLM_TRADE_GATE.md](04_LLM_TRADE_GATE.md) | LLM evaluator as a terminal pre-trade risk check |
+| [00_ARCHITECTURE_ASBUILT.md](00_ARCHITECTURE_ASBUILT.md) | The parts of the existing system CRT plugs into |
+| [01_CRT_STRATEGY.md](01_CRT_STRATEGY.md) | The CRT specification itself |
 
-## Cross-cutting principles
+## Principles
 
-1. **Extend, don't fork.** New capabilities implement existing abstract
-   bases (`StrategyBase`, `ConnectorBase`) and slot into the existing
-   `RiskManager.check_pre_trade` pipeline. If a change requires editing
-   engine core, that is a signal to re-examine the design first.
-2. **No blind execution.** Every entry passes the deterministic risk checks
-   *and* the LLM gate. Gate failure, timeout, or malformed response
-   resolves to **reject**, never approve.
-3. **Fail closed.** Any uncertainty in state — fill unknown, webhook
-   undelivered, LLM unreachable — resolves toward *not* taking and *not*
-   doubling a position.
-4. **Paper before live.** The existing `LaunchPhase` enum
-   (`PAPER → SMALL → HALF → FULL`) is the promotion path. No live capital
-   until the paper phase is clean.
-5. **Everything is audited.** The existing append-only decision audit trail
-   records every check and its rationale. New checks — including the LLM's
-   reasoning — must write to the same trail.
+1. **Add one file; change nothing else.** CRT implements the existing
+   strategy interface. If the work starts requiring edits to the engine,
+   stop and re-examine.
+2. **Backtest before belief.** No claim about CRT's performance until the
+   backtester produces numbers.
+3. **Unknowns stay labelled.** Where the strategy rules are ambiguous, the
+   doc says so rather than inventing a definition.
 
-## Out of scope
+## Known blocker
 
-- Multi-account / multi-firm concurrent orchestration.
-- Strategies beyond CRT (the plugin system supports them; none are planned).
-- Replacing the existing crypto/ccxt path — it stays and keeps working.
-- Ollama / local LLM inference as the primary evaluator (OpenRouter first).
+**The existing test suite has never been run here.** Only Python 3.14 is
+installed, and the project pins library versions that have no Python 3.14
+builds. So "the existing system works" is based on reading the code, not on
+seeing tests pass.
 
-## Open risks carried across all documents
-
-| Risk | Why it matters |
-|---|---|
-| **Test suite has never been run in this environment** | Only Python 3.14 is installed; deps are pinned to early-2024 versions (numpy 1.26.4, psycopg2-binary 2.9.9) with no 3.14 wheels. The "existing code works" claim is structural, not verified. Resolving this is a prerequisite to any milestone. |
-| **Original design docs are missing** | Code cites DOC 1–5 that don't exist. Intent behind some decisions is unrecoverable except by reading source. |
-| **CRT edge is unproven** | No track record. Paper phase exists to test this. |
-| **LLM latency vs. futures timing** | An LLM call in the critical path may be too slow for the aggressive entry model. See [04_LLM_TRADE_GATE.md](04_LLM_TRADE_GATE.md). |
+Getting the suite green is milestone 0 — it is how we find out whether the
+foundation CRT sits on is actually sound.
 
 ## Approval gate
 
-Do not implement any milestone until its document is approved. Use
-`/plan .docs/<doc>` per document once approved.
+No implementation until [01_CRT_STRATEGY.md](01_CRT_STRATEGY.md) is approved.
