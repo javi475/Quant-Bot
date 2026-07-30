@@ -1,0 +1,242 @@
+//@version=6
+// =============================================================================
+// CRT — Setup B (Reversal)
+// -----------------------------------------------------------------------------
+// Spec: .docs/01_CRT_STRATEGY.md
+//
+// A key level is swept and fails: price wicks past PDH/PDL/ONH/ONL but the
+// 15m candle closes back inside. That candle is the LIQUIDATION CANDLE.
+// Price then retests, gets rejected, and we trade against the failed breakout.
+//
+// The retest target is a SWITCH (Level / Liquidation zone / Imbalance) because
+// the source material and the operator describe it differently. Run all three
+// over the same data and let the results decide — do not assume one.
+//
+// Non-repainting by construction:
+//   - every decision is taken on a CLOSED bar
+//   - process_orders_on_close = true, calc_on_every_tick = false
+//   - no request.security(), no lookahead, no future-referencing
+//
+// Requires a chart with EXTENDED HOURS enabled — the overnight levels cannot
+// be computed from regular-session-only data.
+// =============================================================================
+
+strategy(
+     title                   = "CRT Setup B — Reversal",
+     shorttitle              = "CRT-B",
+     overlay                 = true,
+     initial_capital         = 50000,
+     currency                = currency.USD,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 1,
+     pyramiding              = 0,
+     process_orders_on_close = true,
+     calc_on_every_tick      = false,
+     commission_type         = strategy.commission.cash_per_contract,
+     commission_value        = 2.50,
+     slippage                = 1)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+
+TZ = "America/New_York"
+
+grpS = "Session (America/New_York)"
+rthSpec   = input.session("0930-1600", "Regular session",                    group = grpS)
+entrySpec = input.session("0930-1530", "Entry window (no new entries after)", group = grpS)
+holdSpec  = input.session("0930-1555", "Position window (flat after)",        group = grpS)
+
+grpL = "Levels"
+usePDH = input.bool(true, "Prior day high (PDH)", group = grpL)
+usePDL = input.bool(true, "Prior day low  (PDL)", group = grpL)
+useONH = input.bool(true, "Overnight high (ONH)", group = grpL)
+useONL = input.bool(true, "Overnight low  (ONL)", group = grpL)
+
+grpE = "Entry"
+M_LEVEL = "Level"
+M_ZONE  = "Liquidation candle zone"
+M_FVG   = "Imbalance (FVG)"
+retestMode = input.string(M_ZONE, "Retest target", options = [M_LEVEL, M_ZONE, M_FVG], group = grpE,
+     tooltip = "Where price must pull back to before entry.\n\n" +
+               "Level — the swept level itself (operator's description).\n" +
+               "Liquidation candle zone — that candle's full range (source's 'extreme POI').\n" +
+               "Imbalance — the gap the sweep left behind (source's preferred, shallower).\n\n" +
+               "These measure different strategies. Test all three.")
+armBars = input.int(12, "Setup expires after N bars", minval = 1, group = grpE)
+
+grpR = "Risk"
+atrLen     = input.int(14,     "ATR length",              minval = 1,     group = grpR)
+atrMult    = input.float(0.5,  "Buffer (ATR multiple)",   minval = 0.0, step = 0.1, group = grpR)
+rr         = input.float(3.0,  "Reward : Risk",           minval = 0.5, step = 0.5, group = grpR)
+maxStopPts = input.float(20.0, "Max stop distance (pts)", minval = 0.0, step = 1.0, group = grpR,
+     tooltip = "Skip the setup if the computed stop is wider than this. A wide sweep " +
+               "gives a distant 3R target that may not be reached before the forced close.")
+
+grpV = "Display"
+showLevels = input.bool(true, "Draw levels", group = grpV)
+showZones  = input.bool(true, "Mark sweeps", group = grpV)
+
+// ── Session state ────────────────────────────────────────────────────────────
+
+inRTH   = not na(time(timeframe.period, rthSpec,   TZ))
+inEntry = not na(time(timeframe.period, entrySpec, TZ))
+inHold  = not na(time(timeframe.period, holdSpec,  TZ))
+
+rthOpen  = inRTH and not inRTH[1]
+rthClose = not inRTH and inRTH[1]
+
+// ── Levels ───────────────────────────────────────────────────────────────────
+// Computed, never drawn. PDH/PDL come from the prior regular session; ONH/ONL
+// from everything between that close and this open.
+
+var float rthHi = na
+var float rthLo = na
+var float pdh   = na
+var float pdl   = na
+var float onHi  = na
+var float onLo  = na
+var float onHiW = na   // overnight accumulators, in progress
+var float onLoW = na
+
+if rthOpen
+    // The overnight that just ended is now fixed for today's session.
+    onHi  := onHiW
+    onLo  := onLoW
+    onHiW := na
+    onLoW := na
+    rthHi := high
+    rthLo := low
+else if inRTH
+    rthHi := math.max(nz(rthHi, high), high)
+    rthLo := math.min(nz(rthLo, low),  low)
+
+if rthClose
+    // Session complete — becomes "prior day" for the next one.
+    pdh := rthHi
+    pdl := rthLo
+
+if not inRTH
+    onHiW := na(onHiW) ? high : math.max(onHiW, high)
+    onLoW := na(onLoW) ? low  : math.min(onLoW, low)
+
+// ── Sweep detection ──────────────────────────────────────────────────────────
+// A sweep wicks past the level but CLOSES back inside. Close-based by design:
+// an intrabar poke that recovers is not a sweep, it is noise.
+
+sweptUp(float lvl)   => not na(lvl) and high > lvl and close < lvl   // bearish setup
+sweptDown(float lvl) => not na(lvl) and low  < lvl and close > lvl   // bullish setup
+
+// Only levels that are enabled and already established can be swept.
+pdhA = usePDH ? pdh  : na
+pdlA = usePDL ? pdl  : na
+onhA = useONH ? onHi : na
+onlA = useONL ? onLo : na
+
+bearLvl = sweptUp(pdhA)   ? pdhA : sweptUp(onhA)   ? onhA : na
+bullLvl = sweptDown(pdlA) ? pdlA : sweptDown(onlA) ? onlA : na
+
+newBear = inRTH and not na(bearLvl)
+newBull = inRTH and not na(bullLvl)
+
+// ── Armed setup state ────────────────────────────────────────────────────────
+// One setup at a time, matching the engine's one-position-per-instrument rule.
+
+var int   dir      = 0     // 0 none, -1 bearish, +1 bullish
+var float sweepLvl = na
+var float liqHi    = na    // liquidation candle extremes — the stop anchor
+var float liqLo    = na
+var int   armedBar = na
+var float fvgProx  = na    // imbalance proximal edge, once known
+var bool  fvgReady = false
+
+// Arm on a fresh sweep. A newer sweep replaces an older unfilled one — the
+// most recent liquidity event is the relevant one.
+if (newBear or newBull) and strategy.position_size == 0
+    dir      := newBear ? -1 : 1
+    sweepLvl := newBear ? bearLvl : bullLvl
+    liqHi    := high
+    liqLo    := low
+    armedBar := bar_index
+    fvgProx  := na
+    fvgReady := false
+
+// Imbalance is only knowable one bar after the liquidation candle: it needs
+// the candle before it and the candle after it.
+if dir != 0 and not fvgReady and not na(armedBar) and bar_index == armedBar + 1
+    if dir < 0
+        // Bearish gap: low of the pre-sweep candle above the high of this one.
+        fvgProx  := low[2] > high ? high : na
+        fvgReady := true
+    else
+        fvgProx  := high[2] < low ? low : na
+        fvgReady := true
+
+// ── Retest ───────────────────────────────────────────────────────────────────
+// Price must trade INTO the zone and CLOSE back outside its proximal edge.
+// A wick that touches and recovers within the bar is not a retest.
+
+float prox = na
+if dir != 0
+    if retestMode == M_LEVEL
+        prox := sweepLvl
+    else if retestMode == M_ZONE
+        prox := dir < 0 ? liqLo : liqHi   // edge nearest price after the sweep
+    else
+        prox := fvgProx
+
+retestOK = false
+if dir != 0 and not na(prox) and not na(armedBar) and bar_index > armedBar
+    retestOK := dir < 0 ? (high >= prox and close < prox) : (low <= prox and close > prox)
+
+// ── Entry ────────────────────────────────────────────────────────────────────
+
+atr    = ta.atr(atrLen)
+buffer = atr * atrMult
+
+entered = false
+if retestOK and inEntry and inHold and strategy.position_size == 0 and not na(buffer)
+    float entryPx = close
+    float stopPx  = dir < 0 ? liqHi + buffer : liqLo - buffer
+    float risk    = dir < 0 ? stopPx - entryPx : entryPx - stopPx
+
+    if risk > 0 and risk <= maxStopPts
+        float target = dir < 0 ? entryPx - rr * risk : entryPx + rr * risk
+        if dir < 0
+            strategy.entry("S", strategy.short)
+            strategy.exit("S x", from_entry = "S", stop = stopPx, limit = target)
+        else
+            strategy.entry("L", strategy.long)
+            strategy.exit("L x", from_entry = "L", stop = stopPx, limit = target)
+    entered := true
+
+// ── Disarm ───────────────────────────────────────────────────────────────────
+// After an entry attempt, on expiry, when an FVG never formed, or at the close.
+
+staleSetup   = dir != 0 and not na(armedBar) and bar_index - armedBar > armBars
+noImbalance  = dir != 0 and retestMode == M_FVG and fvgReady and na(fvgProx)
+
+if entered or staleSetup or noImbalance or rthClose
+    dir      := 0
+    sweepLvl := na
+    liqHi    := na
+    liqLo    := na
+    armedBar := na
+    fvgProx  := na
+    fvgReady := false
+
+// ── Flat before the close ────────────────────────────────────────────────────
+// Hard rule, not a preference. Nothing is carried overnight.
+
+if not inHold and strategy.position_size != 0
+    strategy.close_all(comment = "session close")
+
+// ── Display ──────────────────────────────────────────────────────────────────
+
+plot(showLevels and usePDH ? pdh  : na, "PDH", color.new(color.orange, 0), 1, plot.style_linebr)
+plot(showLevels and usePDL ? pdl  : na, "PDL", color.new(color.orange, 0), 1, plot.style_linebr)
+plot(showLevels and useONH ? onHi : na, "ONH", color.new(color.aqua,   0), 1, plot.style_linebr)
+plot(showLevels and useONL ? onLo : na, "ONL", color.new(color.aqua,   0), 1, plot.style_linebr)
+
+plotshape(showZones and newBear, "Sweep high", shape.triangledown, location.abovebar, color.new(color.red,   0), size = size.tiny)
+plotshape(showZones and newBull, "Sweep low",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size = size.tiny)
+
+bgcolor(inRTH ? color.new(color.blue, 96) : na, title = "Regular session")
