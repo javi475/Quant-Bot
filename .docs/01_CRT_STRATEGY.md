@@ -89,30 +89,53 @@ or it traps people who thought it did.
 
 ## Stops and targets
 
-### Setup B (reversal) — defined
+### Target — fixed 3:1
 
-- **Target**: the opposing end of the CRT candle's range.
-- **Stop**: slightly beyond the **liquidation candle's extreme** — the actual
-  sweep wick — **not** the level itself.
+**Every trade targets three times its stop distance.** Stop 5 points → target
+15. Stop 8 points → target 24.
 
-The stop rule is the crux of the method: the liquidation candle marks the
-newly protected high/low. A stop at the level sits inside territory price
-just proved it will reach.
+The stop distance is measured first, from the rules below; the target follows
+from it. The point distance varies per trade, the ratio never does.
 
-### Setup A (continuation) — **not yet defined**
+> **This supersedes an earlier rule.** The original brief specified the target
+> as "the opposing end of the CRT candle's range." That is incompatible with a
+> fixed 3:1 — a range-end target is whatever R the range happens to produce
+> (2R on a narrow range, 4R+ on a wide one), so it cannot also always be 3R.
+>
+> Fixed 3:1 governs, being the operator's explicit and more recent
+> instruction. **The range-end rule is worth testing as a variant** — the
+> backtest can run both and compare, which is the only honest way to decide
+> between them. Recorded as an experiment, not a competing rule.
 
-The stop and target rules above are reversal-specific. Continuation trades
-need their own, and they have not been specified.
+### Stop — anchored to the extreme, plus a buffer
 
-Open, and needed before either implementation:
+**Setup B (reversal):** beyond the **liquidation candle's extreme** — the
+actual sweep wick — plus a buffer of a few points.
 
-- Where does the stop sit — below the retest low, below the level, or an ATR
-  multiple?
-- What is the target — a measured move, the next level up (e.g. break PDH,
-  target the prior day's range extension), or a fixed R multiple?
+**Setup A (continuation):** beyond the **retest's extreme** — the low of the
+pullback for a long, the high for a short — plus the same buffer.
 
-**This is the largest remaining gap in the strategy.** Setup A cannot be
-coded or backtested without it.
+In both cases the anchor is *where price actually reached*, not the level
+itself.
+
+> **Why the anchor matters.** A stop placed at the level, or a fixed number of
+> points from it, sometimes lands inside the wick that just swept it — the
+> precise spot the method exists to avoid. Anchoring to the extreme adapts to
+> how far the sweep actually went; the buffer then adds protection on top.
+>
+> The operator's instinct to sit "5 to 10 points above to avoid liquidity
+> sweeps" is right — that is the buffer. Anchoring it to the wick rather than
+> the level is the correction.
+
+### Maximum stop distance
+
+A large sweep produces a wide stop, and therefore a 3:1 target far enough away
+that price may never reach it within a single session — while this is an
+intraday strategy that must be flat before the close.
+
+**A maximum stop distance is therefore required**: if the computed stop
+exceeds it, the setup is skipped rather than traded at poor odds. The value is
+an open question below.
 
 ---
 
@@ -151,7 +174,14 @@ Hard constraints in code, not tunable parameters.
 
 ## Open Questions
 
-- [ ] **Setup A's stop and target** (above). Blocking for continuation trades.
+- [ ] **How big is the buffer beyond the extreme?** The operator suggested
+  5–10 points. Fixed points, ticks, or a fraction of ATR? A fixed value
+  behaves differently in calm and volatile sessions.
+- [ ] **What is the maximum stop distance** before a setup is skipped? Too
+  tight and valid setups are discarded; too loose and 3:1 targets go unreached
+  before the close.
+- [ ] **Does the 3:1 target survive contact with the data?** Worth testing
+  against the original range-end rule, and against a partial-exit variant.
 - [ ] **What counts as a valid retest?** Must the retest candle *close* beyond
   the level, or merely touch and reject intrabar? Given rule 1, presumably a
   close — needs confirming.
@@ -177,7 +207,8 @@ Hard constraints in code, not tunable parameters.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Setup A ships without defined stops/targets | Medium | **High** | Blocking — do not implement Setup A until specified |
+| 3:1 targets go unreached before the forced close | **Medium** | High | Intraday strategy with a hard flat-by-close rule; measure how often targets are missed vs. time-stopped, and enforce a maximum stop distance |
+| Fixed point buffer behaves badly across volatility regimes | Medium | Medium | Test a fixed-point buffer against an ATR-scaled one during validation |
 | Retest rules are ambiguous and the two implementations diverge | **Medium** | High | This document is the single source; Pine and Python are both built from it and cross-checked |
 | Backtest repaints and flatters the strategy | **Medium** | **High** | See [02_PINE_VALIDATION.md](02_PINE_VALIDATION.md) — repainting is the main threat to trusting the result |
 | DST / session boundary bugs | Medium | High | Timezone-aware throughout; explicit tests across both transitions |

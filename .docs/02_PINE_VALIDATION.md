@@ -79,6 +79,40 @@ enough — or bad enough — to make the go/no-go decision obvious.
 - Optimising parameters to make the backtest look good. See the overfitting
   risk below.
 
+## How much history 10,000 bars actually buys
+
+This needs stating plainly, because the number is smaller than it sounds.
+
+The strategy needs **overnight** bars — ONH and ONL are computed from the
+session between yesterday's close and today's open. So the chart must load
+extended hours, not just the regular session.
+
+ES trades roughly 23 hours a day on Globex. At 15 minutes, that is about
+**92 bars per trading day**:
+
+| Bars | Trading days | Roughly |
+|---|---|---|
+| 10,000 (Essentials) | ~109 | **~5 months** |
+| 20,000 (Premium) | ~217 | **~10 months** |
+
+(Had the chart been regular-session-only at ~26 bars/day, 10,000 bars would
+stretch to about 18 months — but that configuration cannot compute the
+overnight levels the strategy depends on.)
+
+**What this means:** ~5 months probably yields a workable number of trades —
+four levels, a setup or two most days, so plausibly 100–200 trades. That is a
+usable sample size.
+
+The problem is not the count, it's the **span**. Five consecutive months is
+essentially *one market regime*. A trending stretch will flatter Setup A
+(continuation) and punish Setup B (reversal); a choppy, range-bound stretch
+does the reverse. A strategy that looks excellent over one regime can fail
+completely in the next.
+
+So a good result on 10,000 bars means "worth continuing", not "proven".
+Upgrading to Premium's 20,000 bars roughly doubles the span and is worth doing
+before any real money is committed — but even ~10 months is not a long test.
+
 ## The three things that make Pine backtests lie
 
 These are the reason to build this deliberately rather than quickly. Each has
@@ -115,10 +149,12 @@ an hour, every downstream number is wrong in a way that still looks credible.
 
 ## Open Questions
 
-- [ ] Which TradingView plan is needed for sufficient 15-minute ES history,
-  and how far back does it actually go? This determines whether the sample is
-  large enough to be meaningful.
-- [ ] Is Bar Magnifier included in that plan?
+- [ ] **Is Bar Magnifier available on Essentials?** If not, early results
+  carry optimistic fill assumptions and should be labelled as such until the
+  Premium upgrade. This matters more than usual here — the stop sits just
+  beyond a wick, so bars that touch both stop and target are common.
+- [ ] Does the plan's bar limit apply per-chart as assumed above? The ~5 month
+  figure should be confirmed against the actual loaded range once charted.
 - [ ] Which symbol — continuous ES futures, or a specific contract?
 - [ ] What performance would count as good enough to proceed? Worth deciding
   *before* seeing results, so the bar isn't moved afterwards.
@@ -133,7 +169,7 @@ an hour, every downstream number is wrong in a way that still looks credible.
 | Repainting produces a fake edge | **Medium** | **Critical** — would justify building a losing bot | Closed-bar data only; verify with bar replay before trusting any result |
 | Intrabar fill assumptions flatter results | **Medium** | High | Enable Bar Magnifier; treat non-magnified results as optimistic |
 | Overfitting to the available sample | Medium | High | Parameters from the operator's method, not from tuning; hold the bar fixed |
-| Insufficient history for a meaningful sample | Medium | Medium | Confirm the plan's data depth before starting |
+| **Single-regime result mistaken for a proven edge** | **High** | **High** | ~5 months is one market regime. Treat a good result as "worth continuing", never as proof; upgrade to 20k bars before committing money |
 | Pine version drifts from the eventual Python version | Medium | Medium | [01_CRT_STRATEGY.md](01_CRT_STRATEGY.md) is the single source; cross-check signals when Python is built |
 
 ---
